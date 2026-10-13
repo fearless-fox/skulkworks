@@ -55,8 +55,88 @@
       "name": "Charcoal",
       "priceCents": null,
       "tier": "ad"
+    },
+    {
+      "id": "watercolor",
+      "name": "Watercolor",
+      "category": "paint",
+      "tier": "ad",
+      "priceCents": null,
+      "description": "Soft washes with darker edges and granulation. Unlock free for 24h by watching a short ad."
+    },
+    {
+      "id": "oil",
+      "name": "Oil Paint",
+      "category": "paint",
+      "tier": "premium",
+      "priceCents": 299,
+      "description": "Thick impasto with bristle streaks."
+    },
+    {
+      "id": "pencil",
+      "name": "Pencil",
+      "category": "dry",
+      "tier": "free",
+      "priceCents": null,
+      "description": "Fine graphite with tooth."
+    },
+    {
+      "id": "crayon",
+      "name": "Crayon",
+      "category": "dry",
+      "tier": "free",
+      "priceCents": null,
+      "description": "Waxy color with broken texture."
+    },
+    {
+      "id": "chalk",
+      "name": "Chalk",
+      "category": "dry",
+      "tier": "free",
+      "priceCents": null,
+      "description": "Soft dusty pastel."
+    },
+    {
+      "id": "laser",
+      "name": "Laser",
+      "category": "fx",
+      "tier": "premium",
+      "priceCents": 199,
+      "description": "White-hot beam with colored halo."
+    },
+    {
+      "id": "fire",
+      "name": "Fire",
+      "category": "fx",
+      "tier": "free",
+      "priceCents": null,
+      "description": "Licks of flame with ember sparks."
+    },
+    {
+      "id": "rainbow",
+      "name": "Rainbow",
+      "category": "fx",
+      "tier": "free",
+      "priceCents": null,
+      "description": "Hue cycles with distance drawn."
+    },
+    {
+      "id": "stipple",
+      "name": "Stipple",
+      "category": "texture",
+      "tier": "free",
+      "priceCents": null,
+      "description": "Hand-dotted pointillism."
+    },
+    {
+      "id": "spray",
+      "name": "Spray Mist",
+      "category": "paint",
+      "tier": "free",
+      "priceCents": null,
+      "description": "Fine aerosol mist."
     }
   ],
   "description": "Skulkworks brush catalog \u2014 single source of truth for brush metadata. Render functions live in frontend/src/brushes/index.js and are keyed by id. Tiers: free (always usable), premium (one-time Stripe purchase), ad (free 24h grant per rewarded ad view).",
-  "version": 1
+  "version": 2
 }

@@ -50,6 +50,40 @@ function toInput(pts) {
   return pts.map((p) => [p.x, p.y, p.pressure ?? 0.5]);
 }
 
+/** Evenly resample a polyline every `spacing` px — for dot/particle brushes. */
+function resample(pts, spacing) {
+  const out = [];
+  if (pts.length < 2 || spacing <= 0) return out;
+  let prev = pts[0];
+  let acc = 0;
+  for (let i = 1; i < pts.length; i++) {
+    const cur = pts[i];
+    let sx = prev.x, sy = prev.y;
+    let sp = prev.pressure ?? 0.5;
+    const cp = cur.pressure ?? 0.5;
+    let segLen = Math.hypot(cur.x - sx, cur.y - sy);
+    while (acc + segLen >= spacing && segLen > 0) {
+      const t = (spacing - acc) / segLen;
+      const nx = sx + (cur.x - sx) * t;
+      const ny = sy + (cur.y - sy) * t;
+      const np = sp + (cp - sp) * t;
+      out.push({ x: nx, y: ny, pressure: np });
+      sx = nx; sy = ny; sp = np;
+      segLen = Math.hypot(cur.x - sx, cur.y - sy);
+      acc = 0;
+    }
+    acc += segLen;
+    prev = cur;
+  }
+  return out;
+}
+
+/** Trace a polyline path on ctx. */
+function pathFromPts(ctx, pts) {
+  ctx.beginPath();
+  pts.forEach((p, i) => (i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y)));
+}
+
 function strokeOptions(params, overrides = {}) {
   return {
     size: params.size,
@@ -210,6 +244,301 @@ defineBrush({
   description: 'Paints back to canvas ground.',
   render(ctx, pts) {
     fillPoly(ctx, pts, { size: 24, color: '#0a0a0a', opacity: 1 }, { stroke: { thinning: 0.5 } });
+  },
+});
+
+// ---------- wave 2 ----------
+
+defineBrush({
+  id: 'watercolor',
+  name: 'Watercolor',
+  category: 'paint',
+  tier: 'ad',
+  description: 'Soft washes with darker edges and granulation.',
+  render(ctx, pts, params, seed) {
+    const rand = mulberry32(seed ^ 0x6a09);
+    const alpha = params.opacity ?? 1;
+    const dots = resample(pts, Math.max(2, params.size * 0.35));
+    ctx.save();
+    for (const d of dots) {
+      const r = params.size * (0.9 + rand() * 0.5) * (0.6 + (d.pressure ?? 0.5) * 0.6);
+      // light wash
+      let g = ctx.createRadialGradient(d.x, d.y, 0, d.x, d.y, r);
+      g.addColorStop(0, rgba(params.color, 0.1 * alpha));
+      g.addColorStop(0.7, rgba(params.color, 0.05 * alpha));
+      g.addColorStop(1, rgba(params.color, 0));
+      ctx.fillStyle = g;
+      ctx.beginPath(); ctx.arc(d.x, d.y, r, 0, Math.PI * 2); ctx.fill();
+      // darker edge ring — the watercolor signature
+      g = ctx.createRadialGradient(d.x, d.y, r * 0.5, d.x, d.y, r);
+      g.addColorStop(0, rgba(params.color, 0));
+      g.addColorStop(0.82, rgba(params.color, 0.11 * alpha));
+      g.addColorStop(1, rgba(params.color, 0));
+      ctx.fillStyle = g;
+      ctx.beginPath(); ctx.arc(d.x, d.y, r, 0, Math.PI * 2); ctx.fill();
+    }
+    // granulation speckle
+    const n = Math.min(900, dots.length * 4);
+    ctx.fillStyle = rgba(params.color, 0.08 * alpha);
+    for (let i = 0; i < n; i++) {
+      const d = dots[Math.floor(rand() * dots.length)];
+      if (!d) break;
+      const a = rand() * Math.PI * 2;
+      const rr = rand() * params.size;
+      ctx.fillRect(d.x + Math.cos(a) * rr, d.y + Math.sin(a) * rr, 1.4, 1.4);
+    }
+    ctx.restore();
+  },
+});
+
+defineBrush({
+  id: 'oil',
+  name: 'Oil Paint',
+  category: 'paint',
+  tier: 'premium',
+  description: 'Thick impasto with bristle streaks.',
+  render(ctx, pts, params, seed) {
+    fillPoly(ctx, pts, params, { stroke: { thinning: 0.45 }, opacity: params.opacity ?? 1 });
+    const rand = mulberry32(seed ^ 0x9e37);
+    const dots = resample(pts, Math.max(3, params.size * 0.5));
+    ctx.save();
+    ctx.lineCap = 'round';
+    for (const d of dots) {
+      const light = rand() > 0.5;
+      ctx.strokeStyle = light ? rgba('#ffffff', 0.1) : rgba('#000000', 0.13);
+      ctx.lineWidth = Math.max(1, params.size * 0.12);
+      const a = rand() * Math.PI;
+      const len = params.size * (0.3 + rand() * 0.5);
+      ctx.beginPath();
+      ctx.moveTo(d.x - (Math.cos(a) * len) / 2, d.y - (Math.sin(a) * len) / 2);
+      ctx.lineTo(d.x + (Math.cos(a) * len) / 2, d.y + (Math.sin(a) * len) / 2);
+      ctx.stroke();
+    }
+    ctx.restore();
+  },
+});
+
+defineBrush({
+  id: 'pencil',
+  name: 'Pencil',
+  category: 'dry',
+  tier: 'free',
+  description: 'Fine graphite with tooth.',
+  render(ctx, pts, params, seed) {
+    const p = { ...params, size: Math.max(1, params.size * 0.45), color: '#9aa0a6' };
+    const outline = fillPoly(ctx, pts, p, {
+      stroke: { thinning: 0.6 },
+      opacity: 0.72 * (params.opacity ?? 1),
+    });
+    if (!outline || !outline.length) return;
+    const rand = mulberry32((seed ^ 0x9e1) >>> 0);
+    const xs = outline.map(([x]) => x);
+    const ys = outline.map(([, y]) => y);
+    const minX = Math.min(...xs), maxX = Math.max(...xs);
+    const minY = Math.min(...ys), maxY = Math.max(...ys);
+    ctx.save();
+    ctx.fillStyle = rgba('#3c4043', 0.3);
+    const n = Math.min(1500, Math.floor(pts.length * 4));
+    for (let i = 0; i < n; i++) {
+      const x = minX + rand() * (maxX - minX);
+      const y = minY + rand() * (maxY - minY);
+      if (pointInPolygon(x, y, outline)) ctx.fillRect(x, y, 1.2, 1.2);
+    }
+    ctx.restore();
+  },
+});
+
+defineBrush({
+  id: 'crayon',
+  name: 'Crayon',
+  category: 'dry',
+  tier: 'free',
+  description: 'Waxy color with broken texture.',
+  render(ctx, pts, params, seed) {
+    const outline = fillPoly(ctx, pts, params, {
+      stroke: { thinning: 0.5 },
+      opacity: 0.88 * (params.opacity ?? 1),
+    });
+    if (!outline || !outline.length) return;
+    const rand = mulberry32(seed ^ 0x51f7);
+    const xs = outline.map(([x]) => x);
+    const ys = outline.map(([, y]) => y);
+    const minX = Math.min(...xs), maxX = Math.max(...xs);
+    const minY = Math.min(...ys), maxY = Math.max(...ys);
+    ctx.save();
+    ctx.globalCompositeOperation = 'destination-out';
+    const n = Math.min(2500, Math.floor(pts.length * 6));
+    for (let i = 0; i < n; i++) {
+      const x = minX + rand() * (maxX - minX);
+      const y = minY + rand() * (maxY - minY);
+      if (pointInPolygon(x, y, outline) && rand() < 0.6) {
+        ctx.beginPath();
+        ctx.arc(x, y, 0.8 + rand() * 1.6, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+    ctx.restore();
+  },
+});
+
+defineBrush({
+  id: 'chalk',
+  name: 'Chalk',
+  category: 'dry',
+  tier: 'free',
+  description: 'Soft dusty pastel.',
+  render(ctx, pts, params, seed) {
+    const rand = mulberry32(seed ^ 0xc4a1);
+    const alpha = params.opacity ?? 1;
+    const dots = resample(pts, Math.max(2, params.size * 0.4));
+    ctx.save();
+    for (const d of dots) {
+      const r = params.size * (0.7 + rand() * 0.4);
+      const g = ctx.createRadialGradient(d.x, d.y, 0, d.x, d.y, r);
+      g.addColorStop(0, rgba(params.color, 0.22 * alpha));
+      g.addColorStop(1, rgba(params.color, 0));
+      ctx.fillStyle = g;
+      ctx.beginPath(); ctx.arc(d.x, d.y, r, 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.fillStyle = rgba('#ffffff', 0.1 * alpha);
+    const n = Math.min(800, dots.length * 3);
+    for (let i = 0; i < n; i++) {
+      const d = dots[Math.floor(rand() * dots.length)];
+      if (!d) break;
+      ctx.fillRect(
+        d.x + (rand() - 0.5) * params.size * 2,
+        d.y + (rand() - 0.5) * params.size * 2,
+        1.5, 1.5
+      );
+    }
+    ctx.restore();
+  },
+});
+
+defineBrush({
+  id: 'laser',
+  name: 'Laser',
+  category: 'fx',
+  tier: 'premium',
+  description: 'White-hot beam with colored halo.',
+  render(ctx, pts, params) {
+    const alpha = params.opacity ?? 1;
+    ctx.save();
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    // halo
+    ctx.shadowColor = params.color;
+    ctx.shadowBlur = params.size * 3;
+    ctx.strokeStyle = rgba(params.color, 0.9 * alpha);
+    ctx.lineWidth = Math.max(1, params.size * 0.5);
+    pathFromPts(ctx, pts);
+    ctx.stroke();
+    // hot core
+    ctx.shadowBlur = 0;
+    ctx.strokeStyle = `rgba(255,255,255,${0.95 * alpha})`;
+    ctx.lineWidth = Math.max(1, params.size * 0.16);
+    pathFromPts(ctx, pts);
+    ctx.stroke();
+    ctx.restore();
+  },
+});
+
+defineBrush({
+  id: 'fire',
+  name: 'Fire',
+  category: 'fx',
+  tier: 'free',
+  description: 'Licks of flame with ember sparks.',
+  render(ctx, pts, params, seed) {
+    const rand = mulberry32(seed ^ 0xf17e);
+    const alpha = params.opacity ?? 1;
+    const dots = resample(pts, Math.max(2, params.size * 0.3));
+    const n = dots.length;
+    ctx.save();
+    dots.forEach((d, i) => {
+      const t = n <= 1 ? 0 : i / (n - 1);
+      const hue = 52 - t * 42 + (rand() - 0.5) * 14;
+      const r = params.size * (0.55 + (d.pressure ?? 0.5) * 0.5) * (1 - t * 0.35);
+      ctx.fillStyle = `hsla(${hue},100%,${50 + rand() * 12}%,${0.85 * alpha})`;
+      ctx.beginPath(); ctx.arc(d.x, d.y, Math.max(0.5, r), 0, Math.PI * 2); ctx.fill();
+      if (rand() < 0.3) {
+        ctx.fillStyle = `hsla(${45 + rand() * 15},100%,62%,${0.8 * alpha})`;
+        ctx.fillRect(d.x + (rand() - 0.5) * r * 3, d.y + (rand() - 0.5) * r * 3 - r, 2, 2);
+      }
+    });
+    ctx.restore();
+  },
+});
+
+defineBrush({
+  id: 'rainbow',
+  name: 'Rainbow',
+  category: 'fx',
+  tier: 'free',
+  description: 'Hue cycles with distance drawn.',
+  render(ctx, pts, params) {
+    const dots = resample(pts, Math.max(2, params.size * 0.4));
+    if (dots.length < 2) return;
+    const alpha = params.opacity ?? 1;
+    ctx.save();
+    ctx.lineCap = 'round';
+    ctx.lineWidth = Math.max(1, params.size * 0.8);
+    let dist = 0;
+    for (let i = 1; i < dots.length; i++) {
+      dist += Math.hypot(dots[i].x - dots[i - 1].x, dots[i].y - dots[i - 1].y);
+      ctx.strokeStyle = `hsla(${(dist * 1.4) % 360},90%,60%,${alpha})`;
+      ctx.beginPath();
+      ctx.moveTo(dots[i - 1].x, dots[i - 1].y);
+      ctx.lineTo(dots[i].x, dots[i].y);
+      ctx.stroke();
+    }
+    ctx.restore();
+  },
+});
+
+defineBrush({
+  id: 'stipple',
+  name: 'Stipple',
+  category: 'texture',
+  tier: 'free',
+  description: 'Hand-dotted pointillism.',
+  render(ctx, pts, params, seed) {
+    const rand = mulberry32(seed ^ 0x5719);
+    const alpha = params.opacity ?? 1;
+    const dots = resample(pts, Math.max(3, params.size * 0.9));
+    ctx.save();
+    ctx.fillStyle = rgba(params.color, alpha);
+    for (const d of dots) {
+      const r = Math.max(
+        0.8,
+        params.size * 0.16 * (0.6 + (d.pressure ?? 0.5) * 0.8) * (0.8 + rand() * 0.4)
+      );
+      ctx.beginPath(); ctx.arc(d.x, d.y, r, 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.restore();
+  },
+});
+
+defineBrush({
+  id: 'spray',
+  name: 'Spray Mist',
+  category: 'paint',
+  tier: 'free',
+  description: 'Fine aerosol mist.',
+  render(ctx, pts, params, seed) {
+    const rand = mulberry32(seed ^ 0x5eed);
+    const alpha = params.opacity ?? 1;
+    const dots = resample(pts, Math.max(4, params.size * 0.6));
+    ctx.save();
+    for (const d of dots) {
+      for (let k = 0; k < 14; k++) {
+        const a = rand() * Math.PI * 2;
+        const rr = Math.sqrt(rand()) * params.size * 1.4;
+        ctx.fillStyle = rgba(params.color, 0.15 * alpha);
+        ctx.fillRect(d.x + Math.cos(a) * rr, d.y + Math.sin(a) * rr, 1.4, 1.4);
+      }
+    }
+    ctx.restore();
   },
 });
 
