@@ -387,22 +387,24 @@ io.on('connection', async (socket) => {
       });
     }
 
-    // Collision detection
-    const collisionCheck = await collisionService.checkCollision(
-      conn.canvasId,
-      data.finalBounds,
-      conn.ghostSession?.toolConfig?.opacity || 1.0
-    );
+    // Collision detection (erasers are exempt — they paint back to ground)
+    if (!data.isEraser) {
+      const collisionCheck = await collisionService.checkCollision(
+        conn.canvasId,
+        data.finalBounds,
+        conn.ghostSession?.toolConfig?.opacity || 1.0
+      );
 
-    if (!collisionCheck.allowed) {
-      return socket.emit('commit:rejected', {
-        code: 'COLLISION_DETECTED',
-        reason: collisionCheck.reason,
-        conflicts: collisionCheck.conflicts,
-        ghostSessionId: data.ghostSessionId,
-        retryAllowed: true,
-        alternative: collisionCheck.alternative
-      });
+      if (!collisionCheck.allowed) {
+        return socket.emit('commit:rejected', {
+          code: 'COLLISION_DETECTED',
+          reason: collisionCheck.reason,
+          conflicts: collisionCheck.conflicts,
+          ghostSessionId: data.ghostSessionId,
+          retryAllowed: true,
+          alternative: collisionCheck.alternative
+        });
+      }
     }
 
     // Lock region for commit
@@ -534,6 +536,7 @@ io.on('connection', async (socket) => {
           id: transaction.id,
           bounds: transaction.payload.bounds,
           path: transaction.payload.path,
+          brush: transaction.payload.brush || null,
           style: {
             color: transaction.payload.style?.color,
             opacity: 1.0,

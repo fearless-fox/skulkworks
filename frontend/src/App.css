@@ -53,6 +53,11 @@ body {
   overflow: hidden;
 }
 
+.canvas-wrapper canvas {
+  touch-action: none; /* critical for pen/touch: no browser gestures */
+  display: block;
+}
+
 .toolbar {
   position: absolute;
   top: 60px;

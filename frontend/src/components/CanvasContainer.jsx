@@ -3,6 +3,7 @@ import { fabric } from 'fabric';
 import { getStroke } from 'perfect-freehand';
 import throttle from 'lodash.throttle';
 import { useCanvasStore } from '../store/canvasStore';
+import { getBrush, renderStrokeToCanvas } from '../brushes';
 
 /** One-shot request/response over socket.io with timeout. */
 function emitOnce(socket, emitEvent, emitData, okEvent, timeoutMs = 10000) {
@@ -42,13 +43,23 @@ function strokeBounds(points) {
   };
 }
 
+/** Baked SVG path (backwards compat for archiver/timelapse) from points. */
+function bakedPath(points, size) {
+  const outline = getStroke(
+    points.map((p) => [p.x, p.y, p.pressure ?? 0.5]),
+    { size, thinning: 0.6, smoothing: 0.5, streamline: 0.5 }
+  );
+  return polygonToPath(outline);
+}
+
 export function CanvasContainer() {
   const wrapRef = useRef(null);
   const canvasElRef = useRef(null);
   const fabricRef = useRef(null);
-  const drawRef = useRef({ drawing: false, points: [], ghostSessionId: null, seq: 0, preview: null });
+  const drawRef = useRef({ drawing: false, points: [], ghostSessionId: null, seq: 0, preview: null, eraser: false });
   const renderedRef = useRef(new Map()); // stroke/sticker/ghost id -> fabric object
   const spaceHeld = useRef(false);
+  const lastPenRef = useRef(0);
 
   const socket = useCanvasStore((s) => s.socket);
   const strokes = useCanvasStore((s) => s.strokes);
@@ -111,6 +122,37 @@ export function CanvasContainer() {
     };
   }, []);
 
+  // --- render a single stroke (brush-aware, path fallback) ---
+  const renderStroke = (canvas, rendered, s) => {
+    const key = `stroke:${s.id}`;
+    if (rendered.has(key)) return;
+    const brush = s.brush?.id ? getBrush(s.brush.id) : null;
+    let obj = null;
+
+    if (brush && s.brush.points?.length > 1 && s.bounds) {
+      const { canvas: tile, offsetX, offsetY } = renderStrokeToCanvas(
+        brush, s.brush.points, s.brush.params, s.bounds
+      );
+      obj = new fabric.Image(tile, {
+        left: offsetX, top: offsetY,
+        selectable: false, evented: false,
+      });
+    } else if (s.path) {
+      obj = new fabric.Path(s.path, {
+        fill: '',
+        stroke: s.style.color,
+        strokeWidth: s.style.width,
+        opacity: s.style.opacity,
+        selectable: false,
+        evented: false,
+      });
+    }
+    if (obj) {
+      canvas.add(obj);
+      rendered.set(key, obj);
+    }
+  };
+
   // --- render committed strokes ---
   useEffect(() => {
     const canvas = fabricRef.current;
@@ -120,17 +162,7 @@ export function CanvasContainer() {
 
     for (const s of strokes) {
       seen.add(`stroke:${s.id}`);
-      if (rendered.has(`stroke:${s.id}`) || !s.path) continue;
-      const obj = new fabric.Path(s.path, {
-        fill: '',
-        stroke: s.style.color,
-        strokeWidth: s.style.width,
-        opacity: s.style.opacity,
-        selectable: false,
-        evented: false,
-      });
-      canvas.add(obj);
-      rendered.set(`stroke:${s.id}`, obj);
+      renderStroke(canvas, rendered, s);
     }
 
     for (const [key, obj] of [...rendered]) {
@@ -140,6 +172,7 @@ export function CanvasContainer() {
       }
     }
     canvas.requestRenderAll();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [strokes]);
 
   // --- render stickers ---
@@ -219,10 +252,24 @@ export function CanvasContainer() {
 
     const pan = { active: false, startX: 0, startY: 0, vpt: null };
 
+    const readPoint = (ev) => {
+      const pt = canvas.getPointer(ev);
+      return {
+        x: pt.x,
+        y: pt.y,
+        pressure: ev.pressure > 0 ? ev.pressure : 0.5,
+        tiltX: ev.tiltX || 0,
+        tiltY: ev.tiltY || 0,
+      };
+    };
+
     const onPointerDown = async (e) => {
+      // Palm rejection: ignore touch shortly after pen activity
+      if (e.pointerType === 'touch' && Date.now() - lastPenRef.current < 800) return;
+      if (e.pointerType === 'pen') lastPenRef.current = Date.now();
+
       const s = useCanvasStore.getState();
       const sock = s.socket;
-      const pt = canvas.getPointer(e);
       const currentTool = toolRef.current;
 
       // Pan: pan tool, space held, or middle mouse
@@ -238,6 +285,7 @@ export function CanvasContainer() {
       if (!sock || !s.authenticated) return;
       if (currentTool === 'sticker') {
         if (!s.permissions.includes('sticker')) return;
+        const pt = canvas.getPointer(e);
         sock.emit('sticker:place', {
           assetId: s.stickerAsset,
           parentArtworkId: null,
@@ -247,11 +295,12 @@ export function CanvasContainer() {
         return;
       }
 
-      // Brush
+      // Brush (pen eraser tip auto-switches)
       if (currentTool !== 'brush' || !s.permissions.includes('write')) return;
       const d = drawRef.current;
       d.drawing = true;
-      d.points = [{ x: pt.x, y: pt.y, pressure: 0.5 }];
+      d.eraser = e.pointerType === 'pen' && e.button === 5;
+      d.points = [readPoint(e)];
       d.seq = 0;
 
       try {
@@ -264,7 +313,6 @@ export function CanvasContainer() {
         d.ghostSessionId = confirmed.ghostSessionId;
       } catch (err) {
         d.drawing = false;
-        useCanvasStore.getState().setHoverInfo(null);
       }
     };
 
@@ -273,7 +321,7 @@ export function CanvasContainer() {
     }, 50);
 
     const onPointerMove = (e) => {
-      const pt = canvas.getPointer(e);
+      if (e.pointerType === 'pen') lastPenRef.current = Date.now();
 
       if (pan.active) {
         const vpt = [...pan.vpt];
@@ -287,32 +335,39 @@ export function CanvasContainer() {
       const d = drawRef.current;
       const s = useCanvasStore.getState();
 
-      if (d.drawing && d.ghostSessionId && s.socket) {
-        d.points.push({ x: pt.x, y: pt.y, pressure: 0.5 });
+      if (d.drawing && s.socket) {
+        // Coalesced events: every sub-point the OS reports between frames.
+        // This is what makes fast pen strokes smooth instead of polygonal.
+        const events = e.getCoalescedEvents ? e.getCoalescedEvents() : [e];
+        for (const ce of events) d.points.push(readPoint(ce));
         d.seq += 1;
 
-        // Local preview
-        const outline = getStroke(d.points, {
-          size: cfgRef.current.size,
-          thinning: 0.6,
-          smoothing: 0.5,
-          streamline: 0.5,
-        });
-        const pathData = polygonToPath(outline);
+        // Local preview via the active brush
+        const brushId = d.eraser ? 'eraser' : cfgRef.current.brushId || 'ink';
+        const brush = getBrush(brushId);
         if (d.preview) canvas.remove(d.preview);
-        if (pathData) {
-          d.preview = new fabric.Path(pathData, {
-            fill: cfgRef.current.color,
-            opacity: cfgRef.current.opacity,
-            selectable: false,
-            evented: false,
+        d.preview = null;
+        if (brush && d.points.length > 1) {
+          const bounds = strokeBounds(d.points);
+          const params = d.eraser
+            ? { size: 28, color: '#0a0a0a', opacity: 1 }
+            : cfgRef.current;
+          const { canvas: tile, offsetX, offsetY } = renderStrokeToCanvas(
+            brush, d.points, params, bounds
+          );
+          d.preview = new fabric.Image(tile, {
+            left: offsetX, top: offsetY,
+            selectable: false, evented: false, opacity: 0.9,
           });
           canvas.add(d.preview);
           canvas.requestRenderAll();
         }
 
-        streamThrottled(s.socket, d.ghostSessionId, d.seq, d.points.slice(-20));
-      } else if (!d.drawing && s.authenticated) {
+        if (d.ghostSessionId) {
+          streamThrottled(s.socket, d.ghostSessionId, d.seq, d.points.slice(-24));
+        }
+      } else if (!d.drawing && s.authenticated && e.pointerType !== 'touch') {
+        const pt = canvas.getPointer(e);
         queryHover(s.socket, pt, e.clientX, e.clientY);
       }
     };
@@ -338,31 +393,31 @@ export function CanvasContainer() {
 
       if (!sock || !d.ghostSessionId || d.points.length < 2) {
         d.ghostSessionId = null;
+        d.eraser = false;
         return;
       }
 
       try {
+        const brushId = d.eraser ? 'eraser' : cfgRef.current.brushId || 'ink';
+        const params = d.eraser
+          ? { size: 28, color: '#0a0a0a', opacity: 1 }
+          : { size: cfgRef.current.size, color: cfgRef.current.color, opacity: cfgRef.current.opacity };
         const bounds = strokeBounds(d.points);
+
         const approved = await emitOnce(
           sock,
           'commit:request',
-          { finalBounds: bounds, ghostSessionId: d.ghostSessionId },
+          { finalBounds: bounds, ghostSessionId: d.ghostSessionId, isEraser: d.eraser },
           'commit:approved'
         );
-
-        const outline = getStroke(d.points, {
-          size: cfgRef.current.size,
-          thinning: 0.6,
-          smoothing: 0.5,
-          streamline: 0.5,
-        });
 
         sock.emit('commit:finalize', {
           transactionId: approved.transactionId,
           strokeData: {
-            path: polygonToPath(outline),
+            path: bakedPath(d.points, params.size), // backwards compat (archiver/timelapse)
             simplifiedPoints: d.points.filter((_, i) => i % 3 === 0),
             pressureProfile: d.points.map((p) => p.pressure ?? 0.5),
+            brush: { id: brushId, params, points: d.points },
           },
           metadata: {},
         });
@@ -371,6 +426,7 @@ export function CanvasContainer() {
       } finally {
         d.ghostSessionId = null;
         d.points = [];
+        d.eraser = false;
       }
     };
 

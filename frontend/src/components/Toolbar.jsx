@@ -1,7 +1,14 @@
 import React from 'react';
 import { useCanvasStore } from '../store/canvasStore';
+import { listBrushes } from '../brushes';
 
 const STICKER_PRESETS = ['⭐', '🔥', '💀', '🌹', '👁️', '⚡'];
+
+const TIER_BADGE = {
+  free: null,
+  premium: '★',
+  ad: '▶',
+};
 
 export function Toolbar() {
   const tool = useCanvasStore((s) => s.tool);
@@ -16,6 +23,7 @@ export function Toolbar() {
   const canWrite = permissions.includes('write');
   const canSticker = permissions.includes('sticker');
   const disabled = !authenticated;
+  const brushes = listBrushes().filter((b) => b.id !== 'eraser');
 
   const btn = (id, label, enabled = true) => (
     <button
@@ -34,6 +42,26 @@ export function Toolbar() {
       {btn('brush', '🖌️', canWrite)}
       {btn('sticker', '⭐', canSticker)}
       {btn('pan', '✋')}
+
+      {tool === 'brush' && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 4, maxHeight: 220, overflowY: 'auto' }}>
+          {brushes.map((b) => (
+            <button
+              key={b.id}
+              className={`tool-btn ${toolConfig.brushId === b.id ? 'active' : ''}`}
+              disabled={disabled || !canWrite}
+              onClick={() => setToolConfig({ brushId: b.id })}
+              title={`${b.name} — ${b.description}`}
+              style={{ width: 'auto', padding: '4px 8px', fontSize: 11, position: 'relative' }}
+            >
+              {b.name}
+              {TIER_BADGE[b.tier] && (
+                <span style={{ marginLeft: 4, color: '#fbbf24' }}>{TIER_BADGE[b.tier]}</span>
+              )}
+            </button>
+          ))}
+        </div>
+      )}
 
       <input
         type="color"

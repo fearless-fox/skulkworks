@@ -11,6 +11,7 @@ function toStroke(tx) {
     id: tx.id || tx.transactionId,
     type: 'stroke',
     path: payload.path || art.path,
+    brush: payload.brush || art.brush || null,
     style: {
       color: payload.style?.color || art.style?.color || '#ffffff',
       opacity: payload.style?.opacity ?? art.style?.opacity ?? 1,
@@ -42,7 +43,7 @@ export const useCanvasStore = create((set, get) => ({
 
   // --- tools ---
   tool: 'brush',
-  toolConfig: { color: '#C13E1B', size: 12, opacity: 1 },
+  toolConfig: { brushId: 'ink', color: '#C13E1B', size: 12, opacity: 1 },
   stickerAsset: '⭐',
 
   // --- hover ---
