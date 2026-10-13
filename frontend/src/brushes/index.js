@@ -84,6 +84,87 @@ function pathFromPts(ctx, pts) {
   pts.forEach((p, i) => (i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y)));
 }
 
+// ---------- stamped brushes (ABR-extracted tips) ----------
+// Tips live in frontend/public/brush-tips/*.png (NOT pushed via the github
+// connector — it mangles binaries; tips ship to the repo from his machine).
+// Each stamped brush def carries { tip, dynamics }; render via stampBrush().
+const tipImages = new Map(); // file -> HTMLImageElement | null (failed)
+const tintCache = new Map(); // `${file}|${color}` -> tinted canvas
+
+/** Preload tip PNGs. Safe to call repeatedly; failures resolve as null. */
+export function preloadTips(files) {
+  const base =
+    (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.BASE_URL) || '/';
+  return Promise.all(
+    files.map(
+      (f) =>
+        new Promise((resolve) => {
+          if (tipImages.has(f)) return resolve(tipImages.get(f));
+          const img = new Image();
+          img.onload = () => {
+            tipImages.set(f, img);
+            resolve(img);
+          };
+          img.onerror = () => {
+            tipImages.set(f, null);
+            resolve(null);
+          };
+          img.src = `${base}brush-tips/${f}`;
+        })
+    )
+  );
+}
+
+function getTintedTip(file, color) {
+  const key = `${file}|${color}`;
+  if (tintCache.has(key)) return tintCache.get(key);
+  const img = tipImages.get(file);
+  if (!img) return null;
+  const c = document.createElement('canvas');
+  c.width = img.width;
+  c.height = img.height;
+  const g = c.getContext('2d');
+  g.drawImage(img, 0, 0);
+  g.globalCompositeOperation = 'source-in';
+  g.fillStyle = color;
+  g.fillRect(0, 0, c.width, c.height);
+  tintCache.set(key, c);
+  return c;
+}
+
+/**
+ * Stamp a grayscale tip along the path, Photoshop-style.
+ * dynamics: { spacing (fraction of size), scatter (fraction of size),
+ *             sizeJitter (0..1), rotationJitter (radians), opacityJitter (0..1) }
+ * Deterministic in (points, params, seed).
+ */
+export function stampBrush(ctx, pts, params, seed, file, dynamics = {}) {
+  const tip = getTintedTip(file, params.color || '#ffffff');
+  if (!tip || pts.length === 0) return;
+  const rand = mulberry32(seed);
+  const size = params.size || 24;
+  const spacing = Math.max(2, size * (dynamics.spacing ?? 0.35));
+  const dots = resample(pts, spacing);
+  const alpha = params.opacity ?? 1;
+  const scatter = (dynamics.scatter ?? 0) * size;
+  ctx.save();
+  for (const d of dots) {
+    const p = d.pressure ?? 0.5;
+    const jz = dynamics.sizeJitter ? 1 + (rand() * 2 - 1) * dynamics.sizeJitter : 1;
+    const s = Math.max(1, size * (0.55 + p * 0.7) * jz);
+    const rot = dynamics.rotationJitter ? (rand() * 2 - 1) * dynamics.rotationJitter : 0;
+    const ox = scatter ? (rand() * 2 - 1) * scatter : 0;
+    const oy = scatter ? (rand() * 2 - 1) * scatter : 0;
+    const a = alpha * (dynamics.opacityJitter ? 1 - rand() * dynamics.opacityJitter : 1);
+    const cos = Math.cos(rot);
+    const sin = Math.sin(rot);
+    ctx.setTransform(cos, sin, -sin, cos, d.x + ox, d.y + oy);
+    ctx.globalAlpha = Math.max(0, Math.min(1, a));
+    ctx.drawImage(tip, -s / 2, -s / 2, s, s);
+  }
+  ctx.restore();
+}
+
 function strokeOptions(params, overrides = {}) {
   return {
     size: params.size,
