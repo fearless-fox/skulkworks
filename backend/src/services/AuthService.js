@@ -27,7 +27,10 @@ class AuthService {
     });
 
     if (!user || user.banned) return false;
-    if (Date.now() - user.createdAt.getTime() < 24 * 60 * 60 * 1000) return false;
+    // Dev-only bypass for local testing (SKIP_ACCOUNT_AGE_GATE=true).
+    // NEVER enable in production — the 24h gate is anti-spam.
+    const skipAgeGate = process.env.SKIP_ACCOUNT_AGE_GATE === 'true';
+    if (!skipAgeGate && Date.now() - user.createdAt.getTime() < 24 * 60 * 60 * 1000) return false;
     if (user.contributions.length > 1000) return false;
     return true;
   }

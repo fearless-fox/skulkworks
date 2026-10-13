@@ -703,6 +703,78 @@ app.get('/health', (req, res) => {
   });
 });
 
+// Dev-only login: mints a JWT for a throwaway local user.
+// Gated by ALLOW_DEV_LOGIN=true — NEVER enable in production.
+if (process.env.ALLOW_DEV_LOGIN === 'true') {
+  logger.warn('DEV MODE: POST /api/auth/dev-login is enabled — do not use in production');
+  app.post('/api/auth/dev-login', async (req, res) => {
+    try {
+      const { displayName } = req.body || {};
+      const base =
+        (typeof displayName === 'string' && displayName.trim().slice(0, 40)) || 'tester';
+      const user = await prisma.user.create({
+        data: {
+          email: `dev-${Date.now()}-${Math.floor(Math.random() * 1e6)}@local.test`,
+          displayName: `${base}-${Math.floor(Math.random() * 10000)}`,
+        },
+      });
+      res.json({
+        token: authService.generateToken(user.id),
+        user: { id: user.id, displayName: user.displayName },
+      });
+    } catch (err) {
+      logger.error('dev login failed', err);
+      res.status(500).json({ error: 'Dev login failed' });
+    }
+  });
+}
+
+// List canvases (public, newest first)
+app.get('/api/canvas', async (req, res) => {
+  try {
+    const canvases = await prisma.canvas.findMany({
+      orderBy: { createdAt: 'desc' },
+      take: 50,
+      include: { epoch: { select: { state: true, endsAt: true } } },
+    });
+    res.json({ canvases });
+  } catch (err) {
+    logger.error('canvas list failed', err);
+    res.status(500).json({ error: 'Could not list canvases' });
+  }
+});
+
+// Create a canvas (auth required) — opens its first epoch automatically
+app.post('/api/canvas', restAuth, async (req, res) => {
+  try {
+    const { name, description, epochDays } = req.body || {};
+    if (!name || typeof name !== 'string' || !name.trim()) {
+      return res.status(400).json({ error: 'name is required' });
+    }
+    const days = Math.min(90, Math.max(1, Number(epochDays) || 7));
+    const now = Date.now();
+    const canvas = await prisma.canvas.create({
+      data: {
+        name: name.trim().slice(0, 120),
+        description: typeof description === 'string' ? description.slice(0, 500) : null,
+        creatorId: req.user.id,
+        epoch: {
+          create: {
+            state: 'OPEN',
+            endsAt: new Date(now + days * 24 * 3600 * 1000),
+            archiveAt: new Date(now + (days + 1) * 24 * 3600 * 1000),
+          },
+        },
+      },
+      include: { epoch: true },
+    });
+    res.status(201).json({ canvas });
+  } catch (err) {
+    logger.error('canvas create failed', err);
+    res.status(500).json({ error: 'Could not create canvas' });
+  }
+});
+
 app.get('/api/canvas/:id/state', async (req, res) => {
   try {
     const canvas = await prisma.canvas.findUnique({
