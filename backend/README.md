@@ -53,6 +53,8 @@ Health: `GET http://localhost:4000/health`
 - Painting opaquely (opacity > 0.3) over occupied cells is rejected — use stickers,
   which carry the artist's cover/add-to/stand-alone intent.
 - Epochs: OPEN → READ_ONLY at `endsAt`, archived ~24h later. Archives land in
-  `./archives/` served at `/archives/:canvasId.svg`. Set `ARCHIVE_PROVIDER=ipfs`
-  (plus provider keys) for the Hall of Fame once a pinning service is chosen.
-- Timelapse mp4 generation is not implemented yet (`timeLapseUrl: null`).
+  `./archives/` served at `/archives/:canvasId.svg`. Timelapse `.mp4` renders
+  automatically on archival (node-canvas + ffmpeg, max 300 frames @ 30fps).
+  Requires an `ffmpeg` binary on PATH.
+- Set `ARCHIVE_PROVIDER=ipfs` (plus provider keys) for the Hall of Fame once a
+  pinning service is chosen.

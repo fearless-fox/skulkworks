@@ -18,6 +18,7 @@ const EpochService = require('./services/EpochService');
 const SpatialIndexService = require('./services/SpatialIndexService');
 const AuthService = require('./services/AuthService');
 const { createArchiveProvider } = require('./services/ArchiveService');
+const TimelapseService = require('./services/TimelapseService');
 
 // Logger setup
 const logger = winston.createLogger({
@@ -90,7 +91,12 @@ const io = new Server(server, {
 const collisionService = new CollisionService(redisClient, logger);
 const spatialIndexService = new SpatialIndexService(redisClient, logger);
 const archiveProvider = createArchiveProvider(logger);
-const epochService = new EpochService(prisma, redisClient, epochQueue, logger, archiveProvider);
+const timelapseService = new TimelapseService({
+  logger,
+  archiveDir: path.join(__dirname, '..', 'archives'),
+  baseUrl: process.env.ARCHIVE_BASE_URL || 'http://localhost:4000',
+});
+const epochService = new EpochService(prisma, redisClient, epochQueue, logger, archiveProvider, timelapseService);
 const authService = new AuthService(prisma, logger);
 
 // Serve archived epoch artifacts

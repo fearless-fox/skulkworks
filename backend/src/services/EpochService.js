@@ -1,12 +1,13 @@
 const { Worker } = require('bullmq');
 
 class EpochService {
-  constructor(prisma, redis, queue, logger, archiveProvider) {
+  constructor(prisma, redis, queue, logger, archiveProvider, timelapseService) {
     this.prisma = prisma;
     this.redis = redis;
     this.queue = queue;
     this.logger = logger;
     this.archiveProvider = archiveProvider;
+    this.timelapseService = timelapseService || null;
     this.CHECK_INTERVAL = 60000;
   }
 
@@ -92,15 +93,24 @@ class EpochService {
       by: ['userId'], where: { canvasId }
     });
 
+    // Timelapse: replay the transaction log into an .mp4 (best effort —
+    // a failed render must not block archival)
+    let timeLapseUrl = null;
+    if (this.timelapseService) {
+      try {
+        timeLapseUrl = await this.timelapseService.renderTimelapse(canvasId, transactions);
+      } catch (e) {
+        this.logger.warn(`Timelapse render failed for canvas ${canvasId}: ${e.message}`);
+      }
+    }
+
     const io = this.io;
     if (io) {
       io.to(`canvas:${canvasId}`).emit('epoch:archived', {
         archiveUrl,
         contributorCount: contributors.length,
         totalStrokes: transactions.filter(t => t.type === 'stroke').length,
-        // TODO: timelapse rendering (frame the transaction log via node-canvas
-        // + ffmpeg) not implemented yet — clients should handle null.
-        timeLapseUrl: null
+        timeLapseUrl
       });
     }
     this.logger.info(`Canvas ${canvasId} archived successfully`);
