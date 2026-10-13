@@ -11,7 +11,7 @@ docker compose up -d
 
 # 2. Env
 cp .env.example .env
-# set JWT_SECRET
+# set JWT_SECRET (and STRIPE_SECRET_KEY / STRIPE_WEBHOOK_SECRET for brush purchases)
 
 # 3. Deps + DB
 npm install
@@ -46,6 +46,25 @@ Health: `GET http://localhost:4000/health`
 | `canvas:init` | Last 100 transactions + spatial snapshot |
 | `epoch:transition` / `epoch:archived` | Epoch lifecycle |
 | `query:result` | Spatial query hits |
+
+## Brush marketplace
+
+Brush catalog lives in `shared/brushes.json` (tiers: `free`, `premium`, `ad`).
+The server validates brush entitlement on every `commit:finalize` — clients can
+forge any brushId, so the server is the source of truth.
+
+| Endpoint | Auth | Purpose |
+|---|---|---|
+| `GET /api/brushes` | — | Public catalog |
+| `GET /api/brushes/me` | optional JWT | Catalog with `owned` flags |
+| `POST /api/brushes/purchase` `{brushId}` | JWT | Stripe Checkout session URL |
+| `POST /api/stripe/webhook` | Stripe sig | Fulfillment → permanent grant |
+| `POST /api/ads/reward` `{brushId}` | JWT | 24h grant for ad-tier brushes |
+
+Socket auth (`auth:success`) now includes a `restToken` JWT so wallet-logged-in
+users can call the marketplace API too. Purchases require `STRIPE_SECRET_KEY`;
+without it the purchase endpoint returns 503. Point Stripe webhooks at
+`/api/stripe/webhook` with `STRIPE_WEBHOOK_SECRET` set.
 
 ## Notes
 

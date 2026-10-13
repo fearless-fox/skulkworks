@@ -19,6 +19,7 @@ model User {
   contributions Transaction[]
   stickers      Sticker[]
   canvases      Canvas[]       @relation("CanvasCreator")
+  brushGrants   BrushGrant[]
 }
 
 model Canvas {
@@ -69,6 +70,28 @@ enum TransactionType {
   stroke
   image
   delete
+}
+
+// Brush entitlements: the brush CATALOG lives in shared/brushes.json
+// (single source of truth for id/tier/price). Grants record who may use
+// non-free brushes and until when. Server validates brushId at commit time.
+model BrushGrant {
+  id        String      @id @default(uuid())
+  userId    String
+  user      User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  brushId   String
+  source    GrantSource
+  expiresAt DateTime?
+  createdAt DateTime    @default(now())
+
+  @@unique([userId, brushId, source])
+  @@index([userId])
+}
+
+enum GrantSource {
+  PURCHASE
+  AD_REWARD
+  PROMO
 }
 
 model Sticker {

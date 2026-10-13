@@ -1,4 +1,5 @@
 import { getStroke } from 'perfect-freehand';
+import manifestData from '../../shared/brushes.json';
 
 /**
  * Skulkworks brush engine.
@@ -8,9 +9,13 @@ import { getStroke } from 'perfect-freehand';
  * identical output for the same inputs. No Date.now(), no Math.random()
  * inside render() — use the seeded PRNG.
  *
- * Brush shape:
- *   { id, name, category, tier: 'free'|'premium'|'ad', description,
- *     render(ctx, pts, params, seed) }
+ * Metadata (name/tier/price) comes from shared/brushes.json — the single
+ * source of truth, shared with the backend entitlement checks.
+ * Render functions are registered here by brush id.
+ *
+ * Brush shape after registration:
+ *   { id, name, category, tier: 'free'|'premium'|'ad', priceCents,
+ *     description, render(ctx, pts, params, seed) }
  * pts are tile-local [{x, y, pressure, tiltX, tiltY}], params = {size, color, opacity}.
  */
 
@@ -77,10 +82,21 @@ function fillPoly(ctx, pts, params, opts = {}) {
 // ---------- brushes ----------
 
 const brushes = new Map();
+const MANIFEST = new Map((manifestData.brushes || []).map((b) => [b.id, b]));
 
 function defineBrush(def) {
-  brushes.set(def.id, def);
-  return def;
+  // Manifest is the source of truth for name/tier/price/category/description.
+  const meta = MANIFEST.get(def.id) || {};
+  brushes.set(def.id, {
+    id: def.id,
+    name: meta.name || def.name,
+    category: meta.category || def.category || 'misc',
+    tier: meta.tier || def.tier || 'free',
+    priceCents: meta.priceCents ?? null,
+    description: meta.description || def.description || '',
+    render: def.render,
+  });
+  return brushes.get(def.id);
 }
 
 defineBrush({

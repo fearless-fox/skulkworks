@@ -19,6 +19,10 @@ const SpatialIndexService = require('./services/SpatialIndexService');
 const AuthService = require('./services/AuthService');
 const { createArchiveProvider } = require('./services/ArchiveService');
 const TimelapseService = require('./services/TimelapseService');
+const BrushService = require('./services/BrushService');
+
+// Stripe (optional — brush purchases disabled without STRIPE_SECRET_KEY)
+const stripe = process.env.STRIPE_SECRET_KEY ? require('stripe')(process.env.STRIPE_SECRET_KEY) : null;
 
 // Logger setup
 const logger = winston.createLogger({
@@ -54,6 +58,29 @@ const limiter = rateLimit({
   message: { error: 'Rate limit exceeded' }
 });
 app.use(limiter);
+
+// Stripe webhook — registered BEFORE express.json() because it needs the raw body
+app.post('/api/stripe/webhook', express.raw({ type: 'application/json' }), async (req, res) => {
+  if (!stripe || !process.env.STRIPE_WEBHOOK_SECRET) {
+    return res.status(503).json({ error: 'Stripe not configured' });
+  }
+  try {
+    const sig = req.headers['stripe-signature'];
+    const event = stripe.webhooks.constructEvent(req.body, sig, process.env.STRIPE_WEBHOOK_SECRET);
+    if (event.type === 'checkout.session.completed') {
+      const session = event.data.object;
+      const { userId, brushId } = session.metadata || {};
+      if (userId && brushId) {
+        await brushService.grantBrush(userId, brushId, 'PURCHASE', null);
+        logger.info(`Purchase fulfilled: brush ${brushId} -> user ${userId}`);
+      }
+    }
+    res.json({ received: true });
+  } catch (err) {
+    logger.error('Stripe webhook error:', err.message);
+    res.status(400).json({ error: 'Webhook signature verification failed' });
+  }
+});
 
 // Body parsing
 app.use(express.json({ limit: '50mb' }));
@@ -98,6 +125,7 @@ const timelapseService = new TimelapseService({
 });
 const epochService = new EpochService(prisma, redisClient, epochQueue, logger, archiveProvider, timelapseService);
 const authService = new AuthService(prisma, logger);
+const brushService = new BrushService(prisma, logger);
 
 // Serve archived epoch artifacts
 app.use('/archives', express.static(path.join(__dirname, '..', 'archives')));
@@ -217,6 +245,8 @@ io.on('connection', async (socket) => {
       canvasState: canvas.epoch.state,
       permissions,
       authMethod: user.walletAddress ? 'wallet' : 'jwt',
+      // REST token for marketplace API (works for both auth methods)
+      restToken: authService.generateToken(user.id),
       rateLimit: {
         maxStrokesPerMinute: 60,
         currentBurst: 10
@@ -465,6 +495,19 @@ io.on('connection', async (socket) => {
         return socket.emit('error', { code: 'LOCK_EXPIRED', message: 'Region lock expired' });
       }
 
+      // Brush entitlement: the server is the source of truth — clients can
+      // forge any brushId in the payload, so validate before persisting.
+      const brushId = data.strokeData?.brush?.id;
+      if (brushId) {
+        const entitled = await brushService.isEntitled(conn.userId, brushId);
+        if (!entitled.ok) {
+          return socket.emit('error', {
+            code: entitled.reason,
+            message: entitled.reason === 'UNKNOWN_BRUSH' ? 'Unknown brush' : 'Brush not owned — unlock it first',
+          });
+        }
+      }
+
       // Re-fetch canvas and confirm epoch still open (defense in depth)
       const canvas = await prisma.canvas.findUnique({
         where: { id: conn.canvasId },
@@ -683,6 +726,88 @@ app.get('/api/canvas/:id/state', async (req, res) => {
   } catch (error) {
     logger.error('API error:', error);
     res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// ---- Brush marketplace ----
+
+// JWT auth for REST endpoints
+async function restAuth(req, res, next) {
+  const token = (req.headers.authorization || '').replace(/^Bearer\s+/i, '');
+  if (!token) return res.status(401).json({ error: 'Unauthorized' });
+  const user = await authService.verifyToken(token);
+  if (!user) return res.status(401).json({ error: 'Unauthorized' });
+  req.user = user;
+  next();
+}
+
+// Public catalog
+app.get('/api/brushes', async (req, res) => {
+  res.json({ brushes: brushService.listBrushes() });
+});
+
+// Catalog annotated with ownership (auth optional)
+app.get('/api/brushes/me', async (req, res) => {
+  const token = (req.headers.authorization || '').replace(/^Bearer\s+/i, '');
+  const user = token ? await authService.verifyToken(token) : null;
+  res.json({ brushes: await brushService.catalogForUser(user?.id || null) });
+});
+
+// Buy a premium brush -> Stripe Checkout session
+app.post('/api/brushes/purchase', restAuth, async (req, res) => {
+  try {
+    if (!stripe) return res.status(503).json({ error: 'Purchases not configured' });
+    const { brushId } = req.body || {};
+    const brush = brushService.getBrush(brushId);
+    if (!brush) return res.status(404).json({ error: 'Unknown brush' });
+    if (brush.tier !== 'premium' || !brush.priceCents) {
+      return res.status(400).json({ error: 'Brush is not purchasable' });
+    }
+    const session = await stripe.checkout.sessions.create({
+      mode: 'payment',
+      line_items: [{
+        price_data: {
+          currency: 'usd',
+          unit_amount: brush.priceCents,
+          product_data: { name: `Skulkworks brush — ${brush.name}` },
+        },
+        quantity: 1,
+      }],
+      success_url: `${process.env.FRONTEND_URL || 'http://localhost:3000'}/?brush_success=1`,
+      cancel_url: `${process.env.FRONTEND_URL || 'http://localhost:3000'}/?brush_cancelled=1`,
+      metadata: { userId: req.user.id, brushId },
+    });
+    res.json({ url: session.url });
+  } catch (error) {
+    logger.error('Purchase error:', error);
+    res.status(500).json({ error: 'Could not start checkout' });
+  }
+});
+
+// Rewarded ad: grant an ad-tier brush for 24h.
+// TODO: verify the ad view server-side with the ad network (e.g. AdMob SSV)
+// before granting. Currently grants directly; abuse is mitigated by a
+// dedicated rate limiter + the 24h grant expiry.
+const adLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000, // 1 hour
+  max: 10,
+  message: { error: 'Too many ad rewards — try again later' },
+});
+app.post('/api/ads/reward', adLimiter, restAuth, async (req, res) => {
+  try {
+    const { brushId } = req.body || {};
+    const brush = brushService.getBrush(brushId);
+    if (!brush) return res.status(404).json({ error: 'Unknown brush' });
+    if (brush.tier !== 'ad') {
+      return res.status(400).json({ error: 'Brush is not ad-unlockable' });
+    }
+    const grant = await brushService.grantBrush(
+      req.user.id, brushId, 'AD_REWARD', new Date(Date.now() + 24 * 60 * 60 * 1000)
+    );
+    res.json({ granted: true, brushId, expiresAt: grant.expiresAt });
+  } catch (error) {
+    logger.error('Ad reward error:', error);
+    res.status(500).json({ error: 'Could not grant brush' });
   }
 });
 

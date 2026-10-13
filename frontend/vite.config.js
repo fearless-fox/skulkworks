@@ -9,6 +9,9 @@ export default defineConfig({
       '/socket.io': {
         target: 'http://localhost:4000',
         ws: true
+      },
+      '/api': {
+        target: 'http://localhost:4000'
       }
     }
   }

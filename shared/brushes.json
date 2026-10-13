@@ -1,0 +1,62 @@
+{
+  "brushes": [
+    {
+      "category": "ink",
+      "description": "Crisp pressure-sensitive ink.",
+      "id": "ink",
+      "name": "Ink Pen",
+      "priceCents": null,
+      "tier": "free"
+    },
+    {
+      "category": "ink",
+      "description": "Bold, even marker with slight transparency.",
+      "id": "marker",
+      "name": "Marker",
+      "priceCents": null,
+      "tier": "free"
+    },
+    {
+      "category": "ink",
+      "description": "Dramatic thick-thin strokes.",
+      "id": "calligraphy",
+      "name": "Calligraphy",
+      "priceCents": null,
+      "tier": "free"
+    },
+    {
+      "category": "tool",
+      "description": "Paints back to canvas ground.",
+      "id": "eraser",
+      "name": "Eraser",
+      "priceCents": null,
+      "tier": "free"
+    },
+    {
+      "category": "fx",
+      "description": "Glowing neon tube.",
+      "id": "neon",
+      "name": "Neon",
+      "priceCents": 199,
+      "tier": "premium"
+    },
+    {
+      "category": "paint",
+      "description": "Soft spray build-up.",
+      "id": "airbrush",
+      "name": "Airbrush",
+      "priceCents": 149,
+      "tier": "premium"
+    },
+    {
+      "category": "dry",
+      "description": "Gritty charcoal with grain. Unlock free for 24h by watching a short ad.",
+      "id": "charcoal",
+      "name": "Charcoal",
+      "priceCents": null,
+      "tier": "ad"
+    }
+  ],
+  "description": "Skulkworks brush catalog \u2014 single source of truth for brush metadata. Render functions live in frontend/src/brushes/index.js and are keyed by id. Tiers: free (always usable), premium (one-time Stripe purchase), ad (free 24h grant per rewarded ad view).",
+  "version": 1
+}

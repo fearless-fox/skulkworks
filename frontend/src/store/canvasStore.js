@@ -45,6 +45,7 @@ export const useCanvasStore = create((set, get) => ({
   tool: 'brush',
   toolConfig: { brushId: 'ink', color: '#C13E1B', size: 12, opacity: 1 },
   stickerAsset: '⭐',
+  brushCatalog: [], // [{ id, name, tier, priceCents, owned, ... }]
 
   // --- hover ---
   hoverInfo: null, // { x, y (screen px), hits }
@@ -75,6 +76,8 @@ export const useCanvasStore = create((set, get) => ({
     });
 
     socket.on('auth:success', (data) => {
+      // Persist REST token (minted for both JWT and wallet logins)
+      if (data.restToken) localStorage.setItem('mural_token', data.restToken);
       set({
         authenticated: true,
         authMethod: data.authMethod || 'jwt',
@@ -83,6 +86,7 @@ export const useCanvasStore = create((set, get) => ({
         canvasState: data.canvasState,
         epochEndsAt: data.viewport?.currentEpochEndsAt || null,
       });
+      get().fetchBrushes();
     });
 
     socket.on('auth:challenge', async ({ message }) => {
@@ -212,5 +216,72 @@ export const useCanvasStore = create((set, get) => ({
   logout() {
     localStorage.removeItem('mural_token');
     get().disconnect();
+  },
+
+  // --- brush marketplace ---
+  apiBase() {
+    return import.meta.env.VITE_SERVER_URL || '';
+  },
+
+  async fetchBrushes() {
+    try {
+      const token = localStorage.getItem('mural_token');
+      const res = await fetch(`${get().apiBase()}/api/brushes/me`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
+      const data = await res.json();
+      if (data.brushes) set({ brushCatalog: data.brushes });
+    } catch {
+      // catalog stays empty; brushes render from local registry regardless
+    }
+  },
+
+  brushOwned(brushId) {
+    const entry = get().brushCatalog.find((b) => b.id === brushId);
+    // Unknown to catalog (or catalog not loaded): fall back to registry tier
+    if (!entry) return true;
+    return !!entry.owned;
+  },
+
+  async purchaseBrush(brushId) {
+    const token = localStorage.getItem('mural_token');
+    try {
+      const res = await fetch(`${get().apiBase()}/api/brushes/purchase`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ brushId }),
+      });
+      const data = await res.json();
+      if (data.url) window.location.href = data.url;
+      else set({ lastError: data.error || 'Purchase failed' });
+    } catch {
+      set({ lastError: 'Purchase failed' });
+    }
+  },
+
+  async unlockWithAd(brushId) {
+    const token = localStorage.getItem('mural_token');
+    try {
+      const res = await fetch(`${get().apiBase()}/api/ads/reward`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ brushId }),
+      });
+      const data = await res.json();
+      if (data.granted) {
+        await get().fetchBrushes();
+        set({ lastError: null });
+      } else {
+        set({ lastError: data.error || 'Ad reward failed' });
+      }
+    } catch {
+      set({ lastError: 'Ad reward failed' });
+    }
   },
 }));
