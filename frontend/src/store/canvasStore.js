@@ -63,7 +63,28 @@ export const useCanvasStore = create((set, get) => ({
     if (get().socket) return;
     const socket = io(SERVER_URL, { transports: ['websocket', 'polling'] });
 
-    socket.on('connect', () => set({ connected: true, lastError: null }));
+    socket.on('connect', async () => {
+      set({ connected: true, lastError: null });
+      if (get().canvasId) return;
+
+      try {
+        const response = await fetch('/api/canvas/default');
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const { canvas } = await response.json();
+        if (!canvas?.id) throw new Error('Server returned no default canvas');
+        if (get().canvasId) return;
+
+        set({ canvasId: canvas.id });
+        const url = new URL(window.location.href);
+        url.searchParams.set('canvas', canvas.id);
+        window.history.replaceState(null, '', url);
+
+        const token = localStorage.getItem('mural_token');
+        if (token) get().authenticateJwt(token);
+      } catch (error) {
+        set({ lastError: `Could not load the shared canvas: ${error.message}` });
+      }
+    });
     socket.on('disconnect', () =>
       set({ connected: false, authenticated: false, permissions: [] })
     );

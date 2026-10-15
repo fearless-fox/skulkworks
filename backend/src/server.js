@@ -1,3 +1,5 @@
+require('dotenv').config();
+
 const express = require('express');
 const http = require('http');
 const path = require('path');
@@ -9,8 +11,13 @@ const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const { PrismaClient } = require('@prisma/client');
 const { Queue } = require('bullmq');
+const IORedis = require('ioredis');
 const winston = require('winston');
 const { v4: uuidv4 } = require('uuid');
+
+const DEFAULT_CANVAS_ID = '00000000-0000-4000-8000-000000000001';
+const DEFAULT_CANVAS_OWNER_ID = '00000000-0000-4000-8000-000000000002';
+const DEFAULT_CANVAS_ENDS_AT = new Date('9999-12-31T23:59:59.999Z');
 
 // Import services
 const CollisionService = require('./services/CollisionService');
@@ -93,9 +100,12 @@ const subClient = pubClient.duplicate();
 // Redis client for data operations
 const redisClient = createClient({ url: process.env.REDIS_URL || 'redis://localhost:6379' });
 
-// BullMQ queues
-const epochQueue = new Queue('epoch-transitions', { connection: redisClient });
-const archivalQueue = new Queue('archival-jobs', { connection: redisClient });
+// BullMQ requires ioredis; node-redis is used for the app and Socket.IO adapter.
+const bullmqConnection = new IORedis(process.env.REDIS_URL || 'redis://localhost:6379', {
+  maxRetriesPerRequest: null
+});
+const epochQueue = new Queue('epoch-transitions', { connection: bullmqConnection });
+const archivalQueue = new Queue('archival-jobs', { connection: bullmqConnection });
 
 // Initialize Socket.IO with Redis adapter
 const io = new Server(server, {
@@ -136,6 +146,34 @@ const canvasSubscriptions = new Map();
 
 async function initializeServer() {
   try {
+    await prisma.user.upsert({
+      where: { id: DEFAULT_CANVAS_OWNER_ID },
+      update: {},
+      create: {
+        id: DEFAULT_CANVAS_OWNER_ID,
+        displayName: 'Skulkworks'
+      }
+    });
+    await prisma.canvas.upsert({
+      where: { id: DEFAULT_CANVAS_ID },
+      update: {},
+      create: {
+        id: DEFAULT_CANVAS_ID,
+        name: 'Skulkworks Community Canvas',
+        creatorId: DEFAULT_CANVAS_OWNER_ID
+      }
+    });
+    await prisma.epoch.upsert({
+      where: { canvasId: DEFAULT_CANVAS_ID },
+      update: {},
+      create: {
+        canvasId: DEFAULT_CANVAS_ID,
+        state: 'OPEN',
+        endsAt: DEFAULT_CANVAS_ENDS_AT
+      }
+    });
+    logger.info(`Persistent community canvas ready: ${DEFAULT_CANVAS_ID}`);
+
     // Connect Redis clients
     await pubClient.connect();
     await subClient.connect();
@@ -253,7 +291,7 @@ io.on('connection', async (socket) => {
       },
       viewport: {
         lockedTo: null,
-        currentEpochEndsAt: canvas.epoch.endsAt
+        currentEpochEndsAt: canvas.id === DEFAULT_CANVAS_ID ? null : canvas.epoch.endsAt
       }
     });
 
@@ -744,6 +782,20 @@ app.get('/api/canvas', async (req, res) => {
   }
 });
 
+app.get('/api/canvas/default', async (req, res) => {
+  try {
+    const canvas = await prisma.canvas.findUnique({
+      where: { id: DEFAULT_CANVAS_ID },
+      include: { epoch: { select: { state: true } } }
+    });
+    if (!canvas) return res.status(503).json({ error: 'Default canvas is not initialized' });
+    res.json({ canvas });
+  } catch (err) {
+    logger.error('default canvas lookup failed', err);
+    res.status(500).json({ error: 'Could not load default canvas' });
+  }
+});
+
 // Create a canvas (auth required) — opens its first epoch automatically
 app.post('/api/canvas', restAuth, async (req, res) => {
   try {
@@ -898,6 +950,9 @@ process.on('SIGTERM', async () => {
   server.close(() => {
     logger.info('Server closed');
   });
+  await epochQueue.close();
+  await archivalQueue.close();
+  await bullmqConnection.quit();
   await prisma.$disconnect();
   await redisClient.quit();
   await pubClient.quit();

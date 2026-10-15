@@ -1,5 +1,5 @@
 import { getStroke } from 'perfect-freehand';
-import manifestData from '../../shared/brushes.json';
+import manifestData from '../../../shared/brushes.json';
 
 /**
  * Skulkworks brush engine.
