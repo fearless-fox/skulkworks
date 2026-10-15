@@ -1,4 +1,11 @@
-const { createCanvas, Path2D } = require('canvas');
+let createCanvas = null;
+let Path2D = null;
+try {
+  ({ createCanvas, Path2D } = require('canvas'));
+} catch (e) {
+  // Native module unavailable (e.g. no prebuilt for this Node version).
+  // Timelapse rendering is best-effort; the server must still boot.
+}
 const { spawn } = require('child_process');
 const fs = require('fs').promises;
 const path = require('path');
@@ -90,6 +97,10 @@ class TimelapseService {
   }
 
   async renderTimelapse(canvasId, transactions) {
+    if (!createCanvas) {
+      this.logger.warn(`Skipping timelapse for canvas ${canvasId}: canvas native module unavailable`);
+      return null;
+    }
     const strokes = transactions.filter((t) => t.type === 'stroke' && t.payload?.path);
     if (strokes.length === 0) {
       this.logger.info(`No strokes for timelapse of canvas ${canvasId}`);

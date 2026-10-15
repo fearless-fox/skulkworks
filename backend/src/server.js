@@ -424,6 +424,15 @@ io.on('connection', async (socket) => {
       return socket.emit('commit:rejected', { code: 'UNAUTHORIZED', message: 'Write permission required' });
     }
 
+    // A ghost session must exist — the client must ghost:start before committing.
+    // Without it, finalize has no bounds/toolConfig and would crash.
+    if (!conn.ghostSession) {
+      return socket.emit('commit:rejected', {
+        code: 'NO_GHOST_SESSION',
+        reason: 'ghost:start required before commit:request'
+      });
+    }
+
     // Rate limiting check
     const now = Date.now();
     const timePassed = now - conn.rateLimitBucket.lastRefill;
@@ -589,7 +598,7 @@ io.on('connection', async (socket) => {
       await spatialIndexService.addToIndex(conn.canvasId, {
         id: transaction.id,
         type: 'stroke',
-        bounds: conn.ghostSession.bounds,
+        bounds: conn.ghostSession?.bounds,
         artistId: conn.userId,
         timestamp: transaction.timestamp
       });
